@@ -3,228 +3,97 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\Autorizaciones;
+use App\Models\EventosAcceso;
 use App\Models\User;
-use SimpleSoftwareIO\QrCode\Facades\QrCode;
-use Illuminate\Support\Facades\Crypt;
-use App\Mail\UsersQr;
-use RealRashid\SweetAlert\Facades\Alert;
-use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
-use App\Models\Persona;
-use App\Models\Area;
-use Faker\Factory as Faker;
-use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Crypt; // Cambiado para mejorar seguridad con Crypt de Laravel
 
-
-
-class UserController extends Controller
+class ApiUaqrooController extends Controller
 {
-    public function index()
+    public function validarUsuario()
     {
-        $users = User::with('persona')->get();
-
-
-        return view('pages-control.users', compact('users'));
-    }
-
-    public function generarQr(String $id)
-    {
-        $user = User::find($id);
-        $user_email = $user->email;
-        //encriptacion usando la funcioon oppenssl_encrypt para aes 256
-        $key = env('ENCRYPTION_KEY');
-
-        //vector de inicialización
-
-        $iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length('aes-256-cbc'));
-
-        //encriptar el email
-        $encriptacion = openssl_encrypt($user_email, 'aes-256-cbc', $key, 0, $iv);
-
-        //concatenar el vector de inicializacion y el email cifrado
-        $correo_encriptado = base64_encode($iv . $encriptacion);
-
-        $pathToImage = public_path('images/uqroo.png');
-
-        $qrCode = QrCode::size(200)->merge($pathToImage, 0.3, true)->generate($correo_encriptado);
-        return view('qrcode', compact('qrCode', 'user'));
-    }
-
-    public function generarQrUser()
-    {
-        $user = User::userIn();
-
-        $user_email = $user->email;
-        //encriptacion usando la funcioon oppenssl_encrypt para aes 256
-        $key = env('ENCRYPTION_KEY');
-
-        //vector de inicialización
-
-        $iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length('aes-256-cbc'));
-
-        //encriptar el email
-        $encriptacion = openssl_encrypt($user_email, 'aes-256-cbc', $key, 0, $iv);
-
-        //concatenar el vector de inicializacion y el email cifrado
-        $correo_encriptado = base64_encode($iv . $encriptacion);
-
-        $pathToImage = public_path('images/uqroo.png');
-
-        $qrCode = QrCode::size(200)->merge($pathToImage, 0.3, true)->generate($correo_encriptado);
-        return view('qrcode', compact('qrCode', 'user'));
-    }
-    
-    public function enviarMailsQr()
-    {
-        //Obtener los datos de todos los usuarios
-        $users = User::all();
-
-        //enviar correo a cada usuario dentro de la base de datos
-        foreach ($users as $user) {
-            //encrypytar el emeail del usuario, posteriormente se desencriptará en el esp32
-            $correo_encriptado = Crypt::encryptString($user->email);
-
-            //generar códigos qr
-            $qrCode = QrCode::size(200)->generate($correo_encriptado);
-
-            //mandar correos pasando los datos al metodo constructor ya creado
-            Mail::to($user->email)->queue(new UsersQr($user, $qrCode));
+        // Añadido manejo de errores
+        try {
+            $validaciones = Autorizaciones::with(['user:id,nombre_usuario'])->get();
+            return response()->json($validaciones);
+        } catch (\Exception $e) {
+            Log::error('Error en validarUsuario: ' . $e->getMessage());
+            return response()->json(['error' => 'Error al obtener validaciones'], 500);
         }
-        Alert::success('Éxito', 'Correos enviados a todos los usuarios');
-    
-        return redirect()->back();
-
     }
 
-    public function userInfo()
+    public function eventosAcceso(Request $request)
     {
-        $user = User::userIn();
-        
-        $user_email = $user->email;
+        // Simplificar validación y agregar manejo de errores
+        $request->validate([
+            'semestre' => 'required|string|max:50',
+            'grupo' => 'required|string|max:50',
+            'matricula' => 'required|string|max:50',
+            'area_id' => 'nullable|integer',
+            'usuario_id' => 'nullable|integer',
+            'permiso' => 'nullable|boolean',
+        ]);
 
-        $sql = DB::table('areas')
-        ->join('autorizaciones_usuarios', 'areas.area_id', '=', 'autorizaciones_usuarios.area_id')
-        ->select('area.nombre', 'autorizaciones_usuario.expires_at')
-        ->where('autorizaciones_usuario.usuario_id', Auth::user()->usuario_id);
-
-
-        //encriptacion usando la funcioon oppenssl_encrypt para aes 256
-        $key = env('ENCRYPTION_KEY');
-
-        //vector de inicialización
-
-        $iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length('aes-256-cbc'));
-
-        //encriptar el email
-        $encriptacion = openssl_encrypt($user_email, 'aes-256-cbc', $key, 0, $iv);
-
-        //concatenar el vector de inicializacion y el email cifrado
-        $correo_encriptado = base64_encode($iv . $encriptacion);
-        $correo_encriptado = str_replace('/', '_', $correo_encriptado);
-
-
-        $pathToImage = public_path('images/uqroo.png');
-
-        $qrCode = QrCode::size(200)->generate($correo_encriptado);
-
-
-
-        return view('pages-control.user.user-info', compact('user', 'qrCode'));
+        try {
+            $evento = EventosAcceso::create($request->only([
+                'semestre', 'grupo', 'matricula', 'area_id', 'usuario_id', 'permiso'
+            ]));
+            return response()->json($evento, 201);
+        } catch (\Exception $e) {
+            Log::error('Error en eventosAcceso: ' . $e->getMessage());
+            return response()->json(['error' => 'Error al crear el evento'], 500);
+        }
     }
 
-    public function downloadQr()
+    public function buscarUsuario($email, $areaId)
     {
-        $user = User::userIn();
-        
-        $user_email = $user->email;
-        //encriptacion usando la funcioon oppenssl_encrypt para aes 256
-        $key = env('ENCRYPTION_KEY');
+        try {
+            // Descodificar y desencriptar el email
+            $emailDecoded = base64_decode($email);
+            $decryptedEmail = Crypt::decryptString($emailDecoded);
 
-        //vector de inicialización
+            $user = User::where('email', $decryptedEmail)->firstOrFail();
+            $evento = EventosAcceso::create([
+                'area_id' => $areaId,
+                'usuario_id' => $user->usuario_id,
+                'fecha_hora' => now(),
+                'evento_id' => $this->generateEventoId(),
+            ]);
 
-        $iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length('aes-256-cbc'));
+            $validacion = Autorizaciones::where('usuario_id', $user->usuario_id)
+                                        ->where('area_id', $areaId)
+                                        ->latest('created_at')
+                                        ->first();
 
-        //encriptar el email
-        $encriptacion = openssl_encrypt($user_email, 'aes-256-cbc', $key, 0, $iv);
-
-        //concatenar el vector de inicializacion y el email cifrado
-        $correo_encriptado = base64_encode($iv . $encriptacion);
-        $correo_encriptado = str_replace('/', '_', $correo_encriptado);
-
-        $pathToImage = public_path('images/uqroo.png');
-
-        $qrCode = QrCode::format('png')->generate($correo_encriptado);
-
-        return response($qrCode)->header('Content-type', 'image/png');
+            if (!$validacion || (isset($validacion->expires_at) && Carbon::parse($validacion->expires_at)->isPast())) {
+                $evento->update(['permiso' => "NO PERMITIDO"]);
+                return response()->json([
+                    'acceso' => false,
+                    'mensaje' => 'No tiene permiso para acceder a esta área'
+                ]);
+            } else {
+                $evento->update(['permiso' => "PERMITIDO"]);
+                return response()->json([
+                    'acceso' => true,
+                    'mensaje' => 'Acceso permitido'
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('Error en buscarUsuario: ' . $e->getMessage());
+            return response()->json(['acceso' => false, 'error' => 'Error al buscar usuario'], 500);
+        }
     }
 
-    public function crearAdmin()
+    public function generateEventoId()
     {
-        return view('pages-control.user.admin_form');
-    }
+        $maxValue = 999999999;
 
-    public function nuevoAdmin(Request $request)
-    {
-        $faker = Faker::create();
+        do {
+            $randomNumber = random_int(1, $maxValue);
+        } while (EventosAcceso::where('evento_id', $randomNumber)->exists());
 
-        $user = new User;
-
-        $username = $faker->unique()->userName;
-
-        $user->nombre_usuario = $username;
-        $user->email = $request->correo;
-        $user->password = Hash::make($request->contrasena);
-        $user->rol_id = 2;
-        $user->save();
-
-        $userId = $user->usuario_id;
-
-        $persona = new Persona;
-        $persona->usuario_id = $userId;
-        $persona->nombre = $request->nombre;
-        $persona->ape_materno = $request->apeMaterno;
-        $persona->ape_paterno = $request->apePaterno;
-        $persona->sexo = $request->genero;
-        $persona->save();
-
-        $personaId = $persona->persona_id;
-        $user->persona_id = $personaId;
-
-        $user->save();
-
-        return redirect()->back()->with('success', 'Nuevo administrador registrado');
-
-    }
-
-    public function nuevoProfe(Request $request)
-    {
-        $faker = Faker::create();
-
-        $user = new User;
-
-        $username = $faker->unique()->userName;
-
-        $user->nombre_usuario = $username;
-        $user->email = $request->correo;
-        $user->password = Hash::make($request->contrasena);
-        $user->rol_id = 3;
-        $user->save();
-
-        $userId = $user->usuario_id;
-
-        $persona = new Persona;
-        $persona->usuario_id = $userId;
-        $persona->nombre = $request->nombre;
-        $persona->ape_materno = $request->apeMaterno;
-        $persona->ape_paterno = $request->apePaterno;
-        $persona->sexo = $request->genero;
-        $persona->save();
-
-        $personaId = $persona->persona_id;
-        $user->persona_id = $personaId;
-
-        $user->save();
-
+        return $randomNumber;
     }
 }
